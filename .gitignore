@@ -19,3 +19,4 @@
 *.o.cmd
 *~
 .vscode
+tools/sync-upstream.sh
