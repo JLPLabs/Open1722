@@ -47,7 +47,11 @@
 #define ARGPARSE_CAN_FD_OPTION      500
 #define ARGPARSE_CAN_IF_OPTION      501
 #define ARGPARSE_TALKER_ID_OPTION   502
-#define ARGPARSE_VLAN_OPTION        503
+// AEF HSI options
+#define HSI_VLAN        503
+#define HSI_UDP6        504
+#define HSI_CANB        505
+#define HSI_GPTP        506
 
 static char ifname[IFNAMSIZ];
 static uint8_t macaddr[ETH_ALEN];
@@ -61,6 +65,12 @@ static uint8_t num_acf_msgs = 1;
 static char can_ifname[IFNAMSIZ];
 static uint64_t talker_stream_id = STREAM_ID;
 static char ip_addr_str[100];
+char *endptr = NULL;
+static uint32_t vlan_tag;
+static char ip6_addr_str[100];
+static uint32_t udp6_port=17220;
+struct sockaddr_in6 dest_addr = {0};
+static uint8_t use_udp6 = 0;
 
 static char doc[] =
         "\naef-hsi-talker -- a program to do AEF HSI CAN Tunneling over Ethernet using Open1722.\
@@ -70,17 +80,23 @@ static char doc[] =
          aef-hsi-talker -u --dst-nw-addr 10.0.0.2:17220 --canif vcan1\n\
          \t(tunnel transactions from vcan1 interface using UDP)";
 
+// refer to: https://www.gnu.org/software/libc/manual/html_node/Argp-Option-Vectors.html
 static struct argp_option options[] = {
-    {"vlan", ARGPARSE_VLAN_OPTION, 0, 0, "Use VLAN"},
-    {"tscf", 't', 0, 0, "Use TSCF (Default: NTSCF)"},
-    {"udp", 'u', 0, 0, "Use UDP (Default: Ethernet)" },
-    {"fd", ARGPARSE_CAN_FD_OPTION, 0, 0, "Use CAN-FD"},
-    {"count", 'c', "COUNT", 0, "Set count of CAN messages per Ethernet frame"},
-    {"canif", ARGPARSE_CAN_IF_OPTION, "CAN_IF", 0, "CAN interface"},
-    {"ifname", 'i', "IFNAME", 0, "Network interface (If Ethernet)"},
-    {"dst-addr", 'd', "MACADDR", 0, "Stream destination MAC address (If Ethernet)"},
-    {"dst-nw-addr", 'n', "NW_ADDR", 0, "Stream destination network address and port (If UDP)"},
-    {"stream-id", ARGPARSE_TALKER_ID_OPTION, "STREAM_ID", 0, "Stream ID for talker stream"},
+    {"tscf", 't', 0, 0, "Use TSCF (Default: NTSCF)", 2},
+    {"udp", 'u', 0, 0, "Use UDP (Default: Ethernet)",2},
+    {"fd", ARGPARSE_CAN_FD_OPTION, 0, 0, "Use CAN-FD", 2},
+    {"count", 'c', "COUNT", 0, "Set count of CAN messages per Ethernet frame", 2},
+    {"canif", ARGPARSE_CAN_IF_OPTION, "CAN_IF", 0, "CAN interface", 2},
+    {"ifname", 'i', "IFNAME", 0, "Network interface (If Ethernet)", 2},
+    {"dst-addr", 'd', "MACADDR", 0, "Stream destination MAC address (If Ethernet)", 2},
+    {"dst-nw-addr", 'n', "NW_ADDR", 0, "Stream destination network address and port (If UDP)", 2},
+    {"stream-id", ARGPARSE_TALKER_ID_OPTION, "STREAM_ID", 0, "Stream ID for talker stream", 2},
+    // ---
+    {     0,            0,          0, 0, "AEF HSI options:",                  3},
+    {"vlan",     HSI_VLAN, "VLAN_TAG", 0, "Use VLAN",                          3},
+    {"UDP6",     HSI_UDP6, "IPv6_ADR", 0, "Use IPv6 UDP, [IPv6-address]:port", 3},
+    {"canbrief", HSI_CANB,          0, 0, "Use CAN Brief",                     3},
+    {"gPTP",     HSI_GPTP,          0, 0, "Use CAN Brief",                     3},
     { 0 }
 };
 
@@ -139,6 +155,60 @@ static error_t parser(int key, char *arg, struct argp_state *state)
             exit(EXIT_FAILURE);
         }
         break;
+
+    // ---
+    case HSI_VLAN:
+        errno = 0;
+        unsigned long vport_tag = strtoul(arg, &endptr, 16);
+        if (errno != 0 || *endptr != '\0' || vport_tag > UINT32_MAX) {
+          fprintf(stderr, "Invalid 32-bit unsigned integer (in hex): %s\n", arg);
+          exit(EXIT_FAILURE);
+        }
+        break;
+    case HSI_UDP6:
+        if (arg[0] != '[') {
+            fprintf(stderr, "Expected format: [IPv6-address]:port — got: %s\n", arg);
+            exit(EXIT_FAILURE);
+        }
+
+        // Find closing bracket
+        char *end_bracket = strchr(arg, ']');
+        if (!end_bracket || end_bracket[1] != ':') {
+            fprintf(stderr, "Invalid format (missing closing bracket or port): %s\n", arg);
+            exit(EXIT_FAILURE);
+        }
+
+        // Extract IPv6 string
+        size_t addr_len = end_bracket - arg - 1;
+        if (addr_len >= INET6_ADDRSTRLEN) {
+            fprintf(stderr, "IPv6 address too long\n");
+            exit(EXIT_FAILURE);
+        }
+
+        char ip_str[INET6_ADDRSTRLEN] = {0};
+        strncpy(ip6_addr_str, arg + 1, addr_len);
+
+        // Extract and parse port
+        const char *port_str = end_bracket + 2;
+        errno = 0;
+        udp6_port = strtoul(port_str, &endptr, 10);
+        if (errno != 0 || *endptr != '\0' || udp6_port > 65535) {
+            fprintf(stderr, "Invalid port number: %s\n", port_str);
+            exit(EXIT_FAILURE);
+        }
+
+        // Fill in sockaddr_in6
+        dest_addr.sin6_family = AF_INET6;
+        dest_addr.sin6_port = htons((uint16_t)udp6_port);
+
+        int res = inet_pton(AF_INET6, ip6_addr_str, &dest_addr.sin6_addr);
+        if (res != 1) {
+            fprintf(stderr, "Invalid IPv6 address: %s\n", ip_str);
+            exit(EXIT_FAILURE);
+        }
+
+        use_udp6 = 1;
+        break;
     }
 
     return 0;
@@ -166,20 +236,23 @@ int main(int argc, char *argv[])
     else
         printf("\tUsing NTSCF\n");
     if(can_variant == AVTP_CAN_CLASSIC)
-        printf("\tUsing Classic CAN interface: %s\n", can_ifname);
+        printf("\t%-20s %20s %s\n", "Using Classic CAN", "Interface:", can_ifname);
     else if(can_variant == AVTP_CAN_FD)
         printf("\tUsing CAN FD interface: %s\n", can_ifname);
-    if(use_udp) {
-        printf("\tUsing UDP\n");
-        printf("\tDestination IP: %s, Send port: %d\n", ip_addr_str, udp_port);
+    if(use_udp || use_udp6) {
+        if(use_udp) {
+          printf("\t%-20s %20s %s:%lu\n", "Using IPv4", "Destination IPv4:", ip_addr_str, udp_port);
+        }
+        if(use_udp6) {
+          printf("\t%-20s %20s [%s]:%lu\n", "Using IPv6", "Destination IPv6:", ip_addr_str, udp_port);
+        }
     } else {
-        printf("\tUsing Ethernet\n");
-        printf("\tNetwork Interface: %s\n", ifname);
-        printf("\tDestination MAC Address: %02x:%02x:%02x:%02x:%02x:%02x\n", macaddr[0], macaddr[1], macaddr[2],
-                                                        macaddr[3], macaddr[4], macaddr[5]);
+        printf("\t%-20s %20s %s\n", "Using Ethernet", "Network Interface:", ifname);
+        printf("\t%-20s %20s %02x:%02x:%02x:%02x:%02x:%02x\n", "", "Destination MAC:",
+                macaddr[0], macaddr[1], macaddr[2],macaddr[3], macaddr[4], macaddr[5]);
     }
-    printf("\tTalker Stream ID: 0x%lx\n", talker_stream_id);
-    printf("\tNumber of ACF messages per AVTP frame in talker stream: %d\n", num_acf_msgs);
+    printf("\t%-20s %20s 0x%lx\n", "Using Stream", "ID:", talker_stream_id);
+    printf("\t%-20s %20s %d\n", "", "#ACF per AVTP frame:", num_acf_msgs);
 
     // Create an appropriate talker socket: UDP or Ethernet raw
     // Setup the socket for sending to the destination
