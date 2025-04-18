@@ -200,6 +200,59 @@ static int prepare_acf_packet(uint8_t* acf_pdu,
     return Avtp_Can_GetAcfMsgLength(pdu)*4;
 }
 
+static int prepare_acf_brief_packet(uint8_t* acf_pdu,
+                                    frame_t* frame,
+                                    Avtp_CanVariant_t can_variant) {
+
+    canid_t can_id;
+    uint8_t can_payload_length;
+
+    // Clear bits
+    Avtp_CanBrief_t* pdu = (Avtp_CanBrief_t*) acf_pdu;
+    memset(pdu, 0, AVTP_CAN_BRIEF_HEADER_LEN);
+
+    // Prepare ACF PDU for CAN
+    Avtp_CanBrief_Init(pdu);
+    Avtp_CanBrief_DisableMtv(pdu);
+
+    // Set required CAN Flags
+#ifdef __linux__
+    can_id = (can_variant == AVTP_CAN_FD) ? (*frame).fd.can_id : (*frame).cc.can_id;
+    can_payload_length = (can_variant == AVTP_CAN_FD) ? (*frame).fd.len : (*frame).cc.len;
+#elif defined(__ZEPHYR__)
+    can_id = (can_variant == AVTP_CAN_FD) ? (*frame).fd.id : (*frame).cc.id;
+    can_payload_length = (can_variant == AVTP_CAN_FD) ? (*frame).fd.dlc : (*frame).cc.dlc;
+#endif
+    if (can_id & CAN_EFF_FLAG) {
+        Avtp_CanBrief_EnableEff(pdu);
+    }
+    if (can_id & CAN_RTR_FLAG) {
+        Avtp_CanBrief_EnableRtr(pdu);
+    }
+
+    if (can_variant == AVTP_CAN_FD) {
+        if (frame->fd.flags & CANFD_BRS) {
+            Avtp_CanBrief_EnableBrs(pdu);
+        }
+        if (frame->fd.flags & CANFD_FDF) {
+            Avtp_CanBrief_EnableFdf(pdu);
+        }
+        if (frame->fd.flags & CANFD_ESI) {
+            Avtp_CanBrief_EnableEsi(pdu);
+        }
+    }
+
+    // Copy payload to ACF CAN PDU
+    if(can_variant == AVTP_CAN_FD)
+        Avtp_CanBrief_CreateAcfMessage(pdu, can_id & CAN_EFF_MASK, frame->fd.data,
+                                       can_payload_length, can_variant);
+    else
+        Avtp_CanBrief_CreateAcfMessage(pdu, can_id & CAN_EFF_MASK, frame->cc.data,
+                                       can_payload_length, can_variant);
+
+    return Avtp_CanBrief_GetAcfMsgLength(pdu)*4;
+}
+
 int can_to_avtp(frame_t* can_frames, Avtp_CanVariant_t can_variant, uint8_t* pdu,
                      int use_udp, int use_tscf, uint64_t stream_id,
                      uint8_t num_acf_msgs, uint8_t cf_seq_num, uint32_t udp_seq_num) {
@@ -263,6 +316,136 @@ int avtp_to_can(uint8_t* pdu, frame_t* can_frames, Avtp_CanVariant_t can_variant
     } else {
         cf_pdu = pdu;
     }
+
+    // Only NTSCF and TSCF formats allowed
+    uint8_t subtype = Avtp_CommonHeader_GetSubtype((Avtp_CommonHeader_t*)cf_pdu);
+    if (subtype == AVTP_SUBTYPE_TSCF) {
+        proc_bytes += AVTP_TSCF_HEADER_LEN;
+        msg_length += Avtp_Tscf_GetStreamDataLength((Avtp_Tscf_t*)cf_pdu) + AVTP_TSCF_HEADER_LEN;
+        s_id = Avtp_Tscf_GetStreamId((Avtp_Tscf_t*)cf_pdu);
+        seq_num = Avtp_Tscf_GetSequenceNum((Avtp_Tscf_t*)cf_pdu);
+    } else if (subtype == AVTP_SUBTYPE_NTSCF) {
+        proc_bytes += AVTP_NTSCF_HEADER_LEN;
+        msg_length += Avtp_Ntscf_GetNtscfDataLength((Avtp_Ntscf_t*)cf_pdu) + AVTP_NTSCF_HEADER_LEN;
+        s_id = Avtp_Ntscf_GetStreamId((Avtp_Ntscf_t*)cf_pdu);
+        seq_num = Avtp_Ntscf_GetSequenceNum((Avtp_Ntscf_t*)cf_pdu);
+    } else {
+        return -1;
+    }
+
+    // Check for stream id
+    if (s_id != stream_id) {
+        return -1;
+    }
+
+    // Check sequence numbers.
+    if (seq_num != *exp_cf_seqnum) {
+        printf("Incorrect sequence num. Expected: %d Recd.: %d\n",
+                                            *exp_cf_seqnum, seq_num);
+        *exp_cf_seqnum = seq_num;
+    }
+
+    while (proc_bytes < msg_length) {
+
+        acf_pdu = &pdu[proc_bytes];
+
+        if (!is_valid_acf_packet(acf_pdu)) {
+            return -1;
+        }
+
+        canid_t can_id = Avtp_Can_GetCanIdentifier((Avtp_Can_t*)acf_pdu);
+        uint8_t* can_payload = Avtp_Can_GetPayload((Avtp_Can_t*)acf_pdu);
+        uint16_t acf_msg_length = Avtp_Can_GetAcfMsgLength((Avtp_Can_t*)acf_pdu)*4;
+        uint16_t can_payload_length = Avtp_Can_GetCanPayloadLength((Avtp_Can_t*)acf_pdu);
+        proc_bytes += acf_msg_length;
+        frame_t* frame = &(can_frames[i++]);
+
+        // Handle EFF Flag
+        if (Avtp_Can_GetEff((Avtp_Can_t*)acf_pdu)) {
+            can_id |= CAN_EFF_FLAG;
+        } else if (can_id > 0x7FF) {
+            printf("Error: CAN ID is > 0x7FF but the EFF bit is not set.\n");
+            return -1;
+        }
+
+        // Handle RTR Flag
+        if (Avtp_Can_GetRtr((Avtp_Can_t*)acf_pdu)) {
+            can_id |= CAN_RTR_FLAG;
+        }
+
+        if (can_variant == AVTP_CAN_FD) {
+            if (Avtp_Can_GetBrs((Avtp_Can_t*)acf_pdu)) {
+                frame->fd.flags |= CANFD_BRS;
+            }
+            if (Avtp_Can_GetFdf((Avtp_Can_t*)acf_pdu)) {
+                frame->fd.flags |= CANFD_FDF;
+            }
+            if (Avtp_Can_GetEsi((Avtp_Can_t*)acf_pdu)) {
+                frame->fd.flags |= CANFD_ESI;
+            }
+#ifdef __linux__
+            frame->fd.can_id = can_id;
+            frame->fd.len = can_payload_length;
+#elif defined(__ZEPHYR__)
+            frame->fd.id = can_id;
+            frame->fd.dlc = can_payload_length;
+#endif
+            memcpy(frame->fd.data, can_payload, can_payload_length);
+        } else {
+#ifdef __linux__
+            frame->cc.can_id = can_id;
+            frame->cc.len = can_payload_length;
+#elif defined(__ZEPHYR__)
+            frame->cc.id = can_id;
+            frame->cc.dlc = can_payload_length;
+#endif
+            memcpy(frame->cc.data, can_payload, can_payload_length);
+        }
+    }
+
+    return i;
+}
+
+int can_to_avtp_brief(frame_t* can_frames, Avtp_CanVariant_t can_variant, uint8_t* pdu,
+                      int use_tscf, uint64_t stream_id,
+                      uint8_t num_acf_msgs, uint8_t cf_seq_num) {
+
+    // Pack into control formats
+    uint8_t *cf_pdu;
+    uint16_t pdu_length = 0, cf_length = 0;
+    int res;
+
+    // Prepare the control format: TSCF/NTSCF
+    cf_pdu = pdu + pdu_length;
+    res = init_cf_pdu(cf_pdu, stream_id, use_tscf, cf_seq_num++);
+    pdu_length += res;
+    cf_length += res;
+
+    int i = 0;
+    while (i < num_acf_msgs) {
+        uint8_t* acf_pdu = pdu + pdu_length;
+        res = prepare_acf_brief_packet(acf_pdu, &(can_frames[i]), can_variant);
+        pdu_length += res;
+        cf_length += res;
+        i++;
+    }
+
+    // Update the length of the PDU
+    update_cf_length(cf_pdu, cf_length, use_tscf);
+
+    return pdu_length;
+
+}
+
+int avtp_brief_to_can(uint8_t* pdu, frame_t* can_frames,
+                      Avtp_CanVariant_t can_variant, uint64_t stream_id,
+                      uint8_t* exp_cf_seqnum) {
+
+    uint8_t *cf_pdu, *acf_pdu, seq_num, i = 0;
+    uint16_t proc_bytes = 0, msg_length = 0;
+    uint64_t s_id;
+
+    cf_pdu = pdu;
 
     // Only NTSCF and TSCF formats allowed
     uint8_t subtype = Avtp_CommonHeader_GetSubtype((Avtp_CommonHeader_t*)cf_pdu);

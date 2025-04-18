@@ -39,11 +39,16 @@ add_executable(acf-can-bridge EXCLUDE_FROM_ALL acf-can-bridge.c ../acf-can-commo
 target_link_libraries(acf-can-bridge open1722 open1722examples)
 target_include_directories(acf-can-bridge PUBLIC ${CMAKE_SOURCE_DIR}/include ../ ../../)
 
-add_dependencies(examples acf-can-talker acf-can-listener acf-can-bridge)
+add_executable(acf-can-brief-talker EXCLUDE_FROM_ALL acf-can-brief-talker.c ../acf-can-common.c)
+target_link_libraries(acf-can-brief-talker open1722 open1722examples)
+target_include_directories(acf-can-brief-talker PUBLIC ${CMAKE_SOURCE_DIR}/include ../ ../../)
+
+add_dependencies(examples acf-can-talker acf-can-listener acf-can-bridge acf-can-brief-talker )
 
 install(TARGETS
     acf-can-listener
     acf-can-talker
     acf-can-bridge
+    acf-can-brief-talker
     RUNTIME DESTINATION bin
     OPTIONAL)

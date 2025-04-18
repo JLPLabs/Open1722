@@ -41,6 +41,7 @@
 #endif
 
 #include "avtp/acf/Can.h"
+#include "avtp/acf/CanBrief.h"
 
 #define MAX_ETH_PDU_SIZE                1500
 #define MAX_CAN_FRAMES_IN_ACF           15
@@ -90,7 +91,7 @@ int avtp_to_can(uint8_t* pdu, frame_t* can_frames, Avtp_CanVariant_t can_variant
                 uint32_t* exp_udp_seqnum);
 
 /**
- * Function that converts AVTP Frames to CAN
+ * Function that converts CAN Frames to AVTP Frame
  *
  * @param can_frames: Array of CAM Frames to be translated to AVTP Frames
  * @param can_variant: AVTP_CAN_CLASSIC or AVTP_CAN_FD
@@ -106,3 +107,33 @@ int avtp_to_can(uint8_t* pdu, frame_t* can_frames, Avtp_CanVariant_t can_variant
 int can_to_avtp(frame_t* can_frames, Avtp_CanVariant_t can_variant, uint8_t* pdu,
                      int use_udp, int use_tscf, uint64_t stream_id,
                      uint8_t num_acf_msgs, uint8_t cf_seq_num, uint32_t udp_seq_num);
+
+/**
+ * Function that converts AVTP CAN Brief Frames to CAN
+ *
+ * @param pdu: Start of the AVTP Frame
+ * @param can_frames: Array of CAM Frames to be recovered from AVTP CAN Brief Frames
+ * @param can_variant: AVTP_CAN_CLASSIC or AVTP_CAN_FD
+ * @param stream_id: AVTP stream ID of interest
+ * @param exp_cf_seqnum: Expected Control format sequence num.
+ * @return Number of CAN messages received
+ */
+int avtp_brief_to_can(uint8_t* pdu, frame_t* can_frames,
+                      Avtp_CanVariant_t can_variant, uint64_t stream_id,
+                      uint8_t* exp_cf_seqnum);
+
+/**
+ * Function that converts CAN Frames to AVTP CAN Brief Frame
+ *
+ * @param can_frames: Array of CAM Frames to be translated to AVTP Frames
+ * @param can_variant: AVTP_CAN_CLASSIC or AVTP_CAN_FD
+ * @param pdu: Start of AVTP Frame
+ * @param use_tscf 1: TSCF, 0: NTSCF
+ * @param stream_id: AVTP stream ID of interest
+ * @param num_acf_msgs: No. of ACF CAN messages to aggregate
+ * @param cf_seq_num: Control format sequence num.
+ * @return Length of the PDU
+ */
+int can_to_avtp_brief(frame_t* can_frames, Avtp_CanVariant_t can_variant, uint8_t* pdu,
+                      int use_tscf, uint64_t stream_id,
+                      uint8_t num_acf_msgs, uint8_t cf_seq_num);
