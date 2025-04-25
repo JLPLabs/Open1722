@@ -99,6 +99,21 @@ int setup_can_socket(const char* can_ifname,
 }
 #endif
 
+void hexdump_2byte_groups(const void *data, size_t len) {
+    const unsigned char *buf = (const unsigned char *)data;
+
+    if (len > 200) len = 200;
+    printf("DBG: hexdump of length: [%d] ", len);
+    for (size_t i = 0; i < len; i += 2) {
+        if (i + 1 < len)
+            printf("%02X%02X ", buf[i], buf[i + 1]);
+        else
+            printf("%02X   ", buf[i]); // last byte if odd
+    }
+
+    printf("\n");
+}
+
 static int is_valid_acf_packet(uint8_t* acf_pdu)
 {
     Avtp_AcfCommon_t *pdu = (Avtp_AcfCommon_t*) acf_pdu;
@@ -420,7 +435,10 @@ int can_to_avtp_brief(frame_t* can_frames, Avtp_CanVariant_t can_variant, uint8_
     res = init_cf_pdu(cf_pdu, stream_id, use_tscf, cf_seq_num++);
     pdu_length += res;
     cf_length += res;
-
+    printf("DBG: can_to_avtp_brief: cf_seq_num   [%d]\n", cf_seq_num);
+    printf("DBG: can_to_avtp_brief: num_acf_msgs [%d]\n", num_acf_msgs);
+    printf("DBG: hexdump *before* packing CAN frames\n");
+    hexdump_2byte_groups(cf_pdu, 12);
     int i = 0;
     while (i < num_acf_msgs) {
         uint8_t* acf_pdu = pdu + pdu_length;
@@ -429,12 +447,18 @@ int can_to_avtp_brief(frame_t* can_frames, Avtp_CanVariant_t can_variant, uint8_
         cf_length += res;
         i++;
     }
+    printf("DBG: hexdump *after* packing CAN frames\n");
+    hexdump_2byte_groups(cf_pdu, 12 + 2 * 16);
 
     // Update the length of the PDU
     update_cf_length(cf_pdu, cf_length, use_tscf);
 
+    printf("DBG: hexdump of 'cf_pdu' *after* updating cf_length\n");
+    hexdump_2byte_groups(cf_pdu, 12 + 2 * 16);
+    printf("DBG: hexdump of 'pdu'    *after* updating cf_length\n");
+    hexdump_2byte_groups(pdu, 12 + 2 * 16);
+    printf("\n");
     return pdu_length;
-
 }
 
 int avtp_brief_to_can(uint8_t* pdu, frame_t* can_frames,

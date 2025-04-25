@@ -131,8 +131,8 @@ int main(int argc, char *argv[])
     struct sockaddr* dest_addr;
     uint8_t cf_seq_num = 0;
 
-    uint8_t pdu[MAX_ETH_PDU_SIZE];
-    uint16_t pdu_length = 0;
+    //uint8_t pdu[MAX_ETH_PDU_SIZE];
+    //uint16_t pdu_length = 0;
     frame_t can_frames[num_acf_msgs];
 
     argp_parse(&argp, argc, argv, 0, NULL, NULL);
@@ -187,9 +187,24 @@ int main(int argc, char *argv[])
             i++;
         }
 
+        // create a new local buffer per send
+        uint8_t pdu[MAX_ETH_PDU_SIZE];
+
         // Pack all the read frames into an AVTP Brief frame
-        pdu_length = can_to_avtp_brief(can_frames, can_variant, pdu, use_tscf,
+        uint16_t pdu_length = can_to_avtp_brief(can_frames, can_variant, pdu, use_tscf,
                                        talker_stream_id, num_acf_msgs, cf_seq_num++);
+        printf("DBG: main: pdu_length = [%d] ", pdu_length);
+        unsigned char *bytes = (unsigned char *)pdu;
+        for (int i = 0; i < pdu_length; i += 2) {
+            if (i > 0 && i % 32 == 0) 
+              printf("\n%18s", "");
+            if (i + 1 < pdu_length)
+                printf("%02x%02x ", bytes[i], bytes[i + 1]);
+            else
+                printf("%02x   ", bytes[i]);  // handle odd-length case
+        }
+        printf("\n");
+
 
         // Send the packed frame out
         res = sendto(fd, pdu, pdu_length, 0,
